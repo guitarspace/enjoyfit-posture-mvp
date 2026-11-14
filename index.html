@@ -1,0 +1,62 @@
+<!doctype html><html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>享瘦 AI 體態分析 MVP</title><style>:root{font-family:-apple-system,BlinkMacSystemFont,'Noto Sans TC',sans-serif;color:#18212d;background:#f4f6fa}*{box-sizing:border-box}body{margin:0}header{background:#18263b;color:white;padding:18px 18px 16px}header h1{font-size:21px;margin:0 0 4px}header p{margin:0;color:#c9d6e5;font-size:13px}.wrap{max-width:960px;margin:auto;padding:14px}.panel{background:white;border-radius:16px;padding:16px;margin-bottom:14px;box-shadow:0 2px 12px #18263b0b}.controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0}button,select,input{font:inherit}button{border:0;border-radius:11px;padding:11px 15px;background:#175cd3;color:white;font-weight:650;cursor:pointer}button.secondary{background:#e8eef8;color:#193454}button:disabled{opacity:.5}input,select{padding:11px;border:1px solid #d6deea;border-radius:10px;max-width:100%}.videoBox{position:relative;background:#101723;border-radius:14px;overflow:hidden;aspect-ratio:4/3;max-height:560px;overflow-anchor:none}video,canvas{position:absolute;width:100%;height:100%;object-fit:contain;inset:0}video{transform:scaleX(-1)}html{overflow-anchor:none}canvas{pointer-events:none}#status{overflow-wrap:anywhere;white-space:pre-wrap}.status{font-size:13px;color:#526174;margin-top:8px}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.metric{border:1px solid #e2e8f0;border-radius:12px;padding:12px}.metric small{display:block;color:#657388}.metric strong{font-size:25px}.metric em{font-size:12px;color:#69788a;font-style:normal}table{width:100%;border-collapse:collapse;font-size:13px}th,td{text-align:left;padding:10px 5px;border-bottom:1px solid #edf0f4}th{color:#596779}.note{font-size:13px;line-height:1.65;color:#596779}#shot{max-width:100%;border-radius:10px;display:none;margin-top:10px}@media(min-width:700px){.grid{grid-template-columns:repeat(4,minmax(0,1fr))}}</style></head><body><header><h1>享瘦｜AI 體態分析</h1><p>Pose MVP 1.4 · 同源模型版</p></header><main class="wrap"><section class="panel" id="scanSection"><label>學員代碼（勿填真實姓名） <input id="member" placeholder="例如 A001" maxlength="32"></label><div class="controls"><select id="view"><option value="front">正面觀察</option><option value="side">側面觀察</option></select><button id="start">啟動攝影機</button><button id="switch" class="secondary" disabled>切換鏡頭</button><button id="stop" class="secondary" disabled>停止</button></div><div class="videoBox"><video id="video" autoplay playsinline muted></video><canvas id="overlay"></canvas></div><p class="status" id="status">尚未啟動。請使用 HTTPS 或 localhost 開啟，並允許攝影機權限。</p><div class="controls"><button id="capture" disabled>拍攝並儲存評估</button><button id="export" class="secondary">匯出紀錄 JSON</button><button id="clear" class="secondary">清除本機紀錄</button></div><img id="shot" alt="本次骨架截圖"></section><section class="panel"><h3>即時姿態指標</h3><div class="grid"><div class="metric"><small>肩線傾斜（畫面）</small><strong id="shoulder">—</strong><em>度，非骨骼診斷</em></div><div class="metric"><small>軀幹側傾（畫面）</small><strong id="torso">—</strong><em>度</em></div><div class="metric"><small>左膝夾角（投影）</small><strong id="leftKnee">—</strong><em>度</em></div><div class="metric"><small>右膝夾角（投影）</small><strong id="rightKnee">—</strong><em>度</em></div></div><p class="note" id="quality">請讓頭部、肩膀、髖部、膝蓋、腳踝都入鏡，保持站姿並固定鏡頭。</p></section><section class="panel"><h3>歷史紀錄與比較</h3><p class="note">紀錄僅儲存在目前瀏覽器的 localStorage，不會自動上傳到伺服器。為降低隱私風險，預設不保存照片；拍攝截圖僅顯示於當前畫面。</p><div style="overflow:auto"><table><thead><tr><th>日期</th><th>代碼</th><th>視角</th><th>肩線</th><th>軀幹</th><th>左膝</th><th>右膝</th></tr></thead><tbody id="history"><tr><td colspan="7">尚無紀錄</td></tr></tbody></table></div><p class="note" id="compare"></p></section><section class="panel note"><strong>使用限制</strong><p>本工具使用 MediaPipe Pose Landmarker 估算影像中的人體關鍵點。肩線、軀幹及膝蓋角度都是二維畫面投影，會受到鏡頭高度、站位、服裝、遮擋及視角影響。無法據此診斷骨盆歪斜、脊椎側彎、肌力不足或疾病。建議同一學員固定相機位置、距離、視角、光線與站姿後再比較。</p></section></main><script>
+let PoseLandmarker, FilesetResolver, DrawingUtils;
+window.addEventListener('error',e=>{const el=document.getElementById('status');if(el)el.textContent='JavaScript 錯誤：'+e.message});
+window.addEventListener('unhandledrejection',e=>{const el=document.getElementById('status');if(el)el.textContent='非同步錯誤：'+String(e.reason?.message||e.reason)});
+
+const $=id=>document.getElementById(id), video=$('video'), canvas=$('overlay'), ctx=canvas.getContext('2d');let landmarker,stream,running=false,facing='user',latest=null,lastTime=-1,busy=false,lastInference=0,starting=false,raf=0;const keys=['shoulder','torso','leftKnee','rightKnee'];const storage='enjoyfit_pose_mvp_v1';let records=read();function read(){try{const data=JSON.parse(localStorage.getItem(storage)||'[]');return Array.isArray(data)?data.filter(r=>r&&typeof r.member==='string'&&typeof r.time==='string'):[]}catch{return []}}function save(){localStorage.setItem(storage,JSON.stringify(records))}function status(t){$('status').textContent=t}function pt(p){return [p.x*canvas.width,p.y*canvas.height]}function angle(a,b,c){let u=[a.x-b.x,a.y-b.y],v=[c.x-b.x,c.y-b.y];let d=(u[0]*v[0]+u[1]*v[1])/(Math.hypot(...u)*Math.hypot(...v));return Math.acos(Math.max(-1,Math.min(1,d)))*180/Math.PI}function visible(l,indices){return indices.every(i=>l[i]&&(l[i].visibility??1)>.55)}function calculate(l){l=l.map(p=>({...p,x:p.x*canvas.width,y:p.y*canvas.height}));let r={};if(visible(l,[11,12]))r.shoulder=Math.atan2(Math.abs(l[12].y-l[11].y),Math.abs(l[12].x-l[11].x))*180/Math.PI;if(visible(l,[11,12,23,24])){let sx=(l[11].x+l[12].x)/2,sy=(l[11].y+l[12].y)/2,hx=(l[23].x+l[24].x)/2,hy=(l[23].y+l[24].y)/2;r.torso=Math.abs(Math.atan2(hx-sx,hy-sy)*180/Math.PI)}if(visible(l,[23,25,27]))r.leftKnee=angle(l[23],l[25],l[27]);if(visible(l,[24,26,28]))r.rightKnee=angle(l[24],l[26],l[28]);return r}function display(r){for(const k of keys)$(k).textContent=Number.isFinite(r?.[k])?r[k].toFixed(1)+'°':'—'}async function init(){
+ if(landmarker)return;
+ status('攝影機已啟動，正在載入 AI 模型…');
+ const mod=await import('./mediapipe/vision_bundle.mjs');
+ PoseLandmarker=mod.PoseLandmarker;
+ FilesetResolver=mod.FilesetResolver;
+ DrawingUtils=mod.DrawingUtils;
+ const files=await FilesetResolver.forVisionTasks('./mediapipe/wasm');
+ landmarker=await PoseLandmarker.createFromOptions(files,{
+  baseOptions:{modelAssetPath:'./mediapipe/models/pose_landmarker_lite.task',delegate:'CPU'},
+  runningMode:'VIDEO',numPoses:1,minPoseDetectionConfidence:.5,minPosePresenceConfidence:.5,minTrackingConfidence:.5
+ });
+}
+async function start(){
+ if(starting)return;
+ starting=true;
+ $('start').disabled=true;
+ await stop();
+ try{
+  status('按鈕已觸發，正在要求攝影機權限…');
+  if(!window.isSecureContext)throw new Error('網站不是安全 HTTPS 環境');
+  if(!navigator.mediaDevices?.getUserMedia)throw new Error('Safari 無法使用 getUserMedia API');
+  stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:facing},width:{ideal:640},height:{ideal:480},frameRate:{ideal:15}}});
+  status('已取得攝影機串流，正在顯示影像…');
+  video.srcObject=stream;
+  video.muted=true;
+  video.playsInline=true;
+  video.setAttribute('playsinline','');
+  video.setAttribute('webkit-playsinline','');
+  await video.play();
+  canvas.width=video.videoWidth||640;
+  canvas.height=video.videoHeight||480;
+  running=true;
+  lastTime=-1;lastInference=0;
+  $('switch').disabled=true;
+  $('stop').disabled=false;
+  $('capture').disabled=true;
+  status('攝影機已啟動。正在初始化 AI 骨架辨識…');
+  try{
+   await init();
+   if(running){
+    status('AI 分析中，請讓全身入鏡。');
+    raf=requestAnimationFrame(loop);
+   }
+  }catch(aiError){
+   status('攝影機正常，但 AI 模型載入失敗：'+(aiError.message||String(aiError))+'。請確認網路連線，攝影機仍可預覽。');
+  }
+ }catch(e){
+  await stop();
+  status('攝影機啟動失敗 ['+(e.name||'Error')+']：'+(e.message||String(e)));
+ }finally{
+  starting=false;
+  $('switch').disabled=!running;
+  $('start').disabled=false;
+ }
+}
+async function stop(){cancelAnimationFrame(raf);ctx.clearRect(0,0,canvas.width,canvas.height);running=false;latest=null;display(null);if(stream){stream.getTracks().forEach(t=>t.stop());stream=null}video.pause();video.srcObject=null;$('capture').disabled=true;$('switch').disabled=true;$('stop').disabled=true}function loop(){if(!running)return;if(landmarker&&!busy&&document.visibilityState==='visible'&&video.readyState>=2&&video.currentTime!==lastTime&&performance.now()-lastInference>=120){lastInference=performance.now();busy=true;try{lastTime=video.currentTime;const result=landmarker.detectForVideo(video,performance.now());ctx.clearRect(0,0,canvas.width,canvas.height);const l=result.landmarks?.[0];if(l){ctx.save();ctx.translate(canvas.width,0);ctx.scale(-1,1);const drawing=new DrawingUtils(ctx);drawing.drawConnectors(l,PoseLandmarker.POSE_CONNECTIONS,{color:'#5be4cb',lineWidth:3});drawing.drawLandmarks(l,{color:'#ffb65e',radius:3});ctx.restore();latest={...calculate(l),view:$('view').value};display(latest);$('quality').textContent='已偵測人體。數值為影像投影估計，請固定拍攝條件。';$('capture').disabled=false}else{latest=null;display(null);$('capture').disabled=true;$('quality').textContent='未偵測到完整人體，請退後並增加光線。'}}catch(e){latest=null;display(null);$('capture').disabled=true;status('分析錯誤：'+e.message)}finally{busy=false}}raf=requestAnimationFrame(loop)}function render(){let rows=records.slice(-20).reverse();$('history').innerHTML=rows.length?rows.map(r=>`<tr><td>${new Date(r.time).toLocaleString('zh-TW')}</td><td>${escapeHTML(r.member)}</td><td>${r.view==='front'?'正面':'側面'}</td>${keys.map(k=>`<td>${Number.isFinite(r[k])?r[k].toFixed(1)+'°':'—'}</td>`).join('')}</tr>`).join(''):'<tr><td colspan="7">尚無紀錄</td></tr>';let id=$('member').value.trim(),a=records.filter(r=>r.member===id&&r.view===$('view').value);if(id&&a.length>=2){let x=a.at(-2),y=a.at(-1);$('compare').textContent='最近兩次差異（新－舊）：'+keys.map(k=>`${({shoulder:'肩線',torso:'軀幹',leftKnee:'左膝',rightKnee:'右膝'})[k]} ${Number.isFinite(x[k])&&Number.isFinite(y[k])?(y[k]-x[k]).toFixed(1)+'°':'—'}`).join('；')+'。差異不代表必然改善。'}else $('compare').textContent='輸入相同學員代碼並儲存至少兩次相同視角評估，即可顯示差異。'}function escapeHTML(s){return s.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}$('start').onclick=start;$('stop').onclick=stop;$('switch').onclick=()=>{facing=facing==='user'?'environment':'user';start()};window.addEventListener('pagehide',()=>stop());window.addEventListener('pageshow',e=>{if(e.persisted){stop();status('頁面已恢復，請重新啟動攝影機。')}});$('capture').onclick=()=>{if(!latest){status('請先讓鏡頭偵測到人體。');return}let member=$('member').value.trim();if(!member){status('請先輸入匿名學員代碼。');return}records.push({time:new Date().toISOString(),member,...latest});try{save()}catch(e){records.pop();status('紀錄無法儲存，請檢查瀏覽器儲存空間或隱私設定。');return}render();const snap=document.createElement('canvas');snap.width=canvas.width;snap.height=canvas.height;const c=snap.getContext('2d');c.save();c.translate(snap.width,0);c.scale(-1,1);c.drawImage(video,0,0,snap.width,snap.height);c.restore();c.drawImage(canvas,0,0);$('shot').src=snap.toDataURL('image/jpeg',.8);$('shot').style.display='block';status('評估數值已儲存於本機；照片只在本次頁面顯示，未保存。')};$('export').onclick=()=>{const blob=new Blob([JSON.stringify(records,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='posture-records.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};$('clear').onclick=()=>{if(confirm('確定刪除這個瀏覽器內全部評估紀錄？')){records=[];save();render()}};$('member').oninput=render;$('view').onchange=()=>{latest=null;$('capture').disabled=true;display(null);render()};render();</script></body></html>
